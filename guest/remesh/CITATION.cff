@@ -19,3 +19,9 @@ references:
     repository-code: https://github.com/zeux/meshoptimizer
     commit: 9e1f07b159d3cb777f1c67ed31fc11fd117986f4
     license: MIT
+  - type: software
+    title: contract-guest-runtime (godot-sandbox guest API, vendor/sandbox-api)
+    authors:
+      - name: V-Sekai-fire
+    repository-code: https://github.com/V-Sekai-fire/contract-guest-runtime
+    commit: 22cdad11236c28fadb30c856271e2efb8a774395

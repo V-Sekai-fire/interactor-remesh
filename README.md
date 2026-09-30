@@ -25,3 +25,10 @@ A 0.1 m sphere at resolution 64 must come back within half a voxel
     FAIL ... worst 2.015 mm ... planted 2000 um
 
 `tests/remesh/build.sh` builds the guest and runs both lines.
+
+## Pins
+
+| Dependency | Revision |
+|---|---|
+| `contract-guest-runtime` (`vendor/sandbox-api`) | `22cdad11236c28fadb30c856271e2efb8a774395` (tree `5ec3b43904`) |
+| `meshoptimizer` | `9e1f07b159d3cb777f1c67ed31fc11fd117986f4` |
