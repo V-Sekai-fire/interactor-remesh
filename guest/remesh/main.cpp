@@ -3,10 +3,12 @@
 // arrays; it has no file, socket or host-object access.
 #include <api.hpp>
 #include <meshoptimizer.h>
+#include "lod.h"
 #include "transfer.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <string>
 #include <vector>
 
 static std::vector<float> flat(const PackedVector3Array &p) {
@@ -226,6 +228,59 @@ static Variant gate_alpha(int64_t planted) {
 	return Variant(String(line));
 }
 
+// Godot's LOD chain (see lod.h): [indices_0, error_m_0, indices_1, error_m_1, ...],
+// level 0 the input with zero error, errors in metres and non-decreasing.
+static Variant lod_chain(PackedVector3Array positions, PackedVector3Array normals, PackedInt32Array indices, bool deformable) {
+	const std::vector<rm::Lod> chain = rm::lod_chain(flat(positions), flat(normals), indices_of(indices), deformable);
+	Array out = Array::Create();
+	for (const rm::Lod &l : chain) {
+		out.push_back(Variant(packed(l.indices, l.indices.size())));
+		out.push_back(Variant(double(l.error_m)));
+	}
+	return Variant(out);
+}
+
+// LOD gate: on a 0.1 m sphere the chain's errors must not decrease, and each
+// level's measured worst deviation from the sphere (triangle centroids, where
+// a chord sags most) must stay within 2x the reported error plus the level-0
+// sag. planted_scale divides every reported error, so under-reporting fails.
+static Variant gate_lod(int64_t planted_scale) {
+	std::vector<float> pos;
+	std::vector<unsigned> ix;
+	const float r = 0.1f;
+	sphere(pos, ix, r, 96);
+	std::vector<float> nrm(pos.size());
+	for (size_t i = 0; i < pos.size(); ++i) nrm[i] = pos[i] / r;
+	const std::vector<rm::Lod> chain = rm::lod_chain(pos, nrm, ix, false);
+	auto sag = [&](const std::vector<unsigned> &t) {
+		float worst = 0;
+		for (size_t k = 0; k + 2 < t.size(); k += 3) {
+			float c[3] = { 0, 0, 0 };
+			for (int v = 0; v < 3; ++v)
+				for (int a = 0; a < 3; ++a) c[a] += pos[t[k + v] * 3 + a] / 3;
+			worst = std::max(worst, r - std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]));
+		}
+		return worst;
+	};
+	const float base = sag(chain[0].indices);
+	const float div = planted_scale > 0 ? float(planted_scale) : 1.0f;
+	bool pass = chain.size() >= 4;
+	std::string lines;
+	float prev = 0;
+	for (size_t l = 0; l < chain.size(); ++l) {
+		const float reported = chain[l].error_m / div, measured = sag(chain[l].indices);
+		const bool ok = chain[l].error_m >= prev && measured <= 2.0f * reported + base + 1e-6f;
+		pass = pass && ok;
+		prev = chain[l].error_m;
+		char line[160];
+		std::snprintf(line, sizeof line, "  lod %zu: %zu tris, reported %.3f mm, measured %.3f mm%s\n", l, chain[l].indices.size() / 3, reported * 1000, measured * 1000, ok ? "" : "  <-- over");
+		lines += line;
+	}
+	char head[120];
+	std::snprintf(head, sizeof head, "%s lod chain %zu levels; planted scale %lld\n", pass ? "PASS" : "FAIL", chain.size(), (long long)planted_scale);
+	return Variant(String(std::string(head) + lines));
+}
+
 int main() {
 	ADD_API_FUNCTION(version, "String", "", "meshoptimizer version and manifest pin");
 	ADD_API_FUNCTION(remesh, "Array", "PackedVector3Array positions, PackedInt32Array indices, int resolution, int options, int target_triangles", "voxel remesh, weld, simplify; returns [positions, indices, error]");
@@ -235,5 +290,7 @@ int main() {
 	ADD_API_FUNCTION(alpha_cull, "PackedInt32Array", "PackedVector2Array uvs, PackedInt32Array indices, PackedByteArray alpha, int width, int height, int threshold", "drop mostly transparent triangles; the kept indices");
 	ADD_API_FUNCTION(gate_transfer, "String", "int planted_um", "transfer gate; a planted tangential shift must FAIL");
 	ADD_API_FUNCTION(gate_alpha, "String", "int planted", "alpha gate; planted != 0 must FAIL");
+	ADD_API_FUNCTION(lod_chain, "Array", "PackedVector3Array positions, PackedVector3Array normals, PackedInt32Array indices, bool deformable", "Godot-style LOD chain; [indices, error_m, ...]");
+	ADD_API_FUNCTION(gate_lod, "String", "int planted_scale", "LOD gate; planted_scale > 1 under-reports and must FAIL");
 	halt();
 }
