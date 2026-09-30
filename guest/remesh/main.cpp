@@ -3,6 +3,7 @@
 // arrays; it has no file, socket or host-object access.
 #include <api.hpp>
 #include <meshoptimizer.h>
+#include "transfer.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -150,10 +151,89 @@ static Variant gate(int64_t planted_um) {
 	return Variant(String(line));
 }
 
+// For each query point, the source triangle holding its closest surface point
+// and its barycentrics there; the host interpolates UVs, skin weights and
+// blendshapes with them. Returns [triangles, barycentrics (three per query)].
+static Variant closest(PackedVector3Array src_positions, PackedInt32Array src_indices, PackedVector3Array query) {
+	const rm::Closest c = rm::closest_points(flat(src_positions), indices_of(src_indices), flat(query));
+	return Variant(Array::make(Variant(PackedInt32Array(c.triangle)), Variant(PackedFloat32Array(c.bary))));
+}
+
+// Drop the triangles whose texture alpha is mostly transparent; the kept
+// indices. alpha holds width * height bytes, row 0 at v = 0.
+static Variant alpha_cull(PackedVector2Array uvs, PackedInt32Array indices, PackedByteArray alpha, int64_t width, int64_t height, int64_t threshold) {
+	std::vector<float> uv;
+	for (const Vector2 &v : uvs.fetch()) { uv.push_back(v.x); uv.push_back(v.y); }
+	const std::vector<unsigned> kept = rm::alpha_cull(uv, indices_of(indices), alpha.fetch(), int(width), int(height), int(threshold));
+	return Variant(packed(kept, kept.size()));
+}
+
+// Transfer gate: points sampled on a sphere mesh must come back onto
+// themselves within 0.01 mm. planted_um shifts each query along the surface
+// tangent, so the recovered point misses its sample by that much.
+static Variant gate_transfer(int64_t planted_um) {
+	std::vector<float> pos;
+	std::vector<unsigned> ix;
+	sphere(pos, ix, 0.1f, 48);
+	std::vector<float> query, truth;
+	for (size_t t = 0; t < ix.size() / 3; t += 7) {
+		const float w[3] = { 0.2f, 0.3f, 0.5f };
+		float p[3] = { 0, 0, 0 };
+		for (int c = 0; c < 3; ++c)
+			for (int k = 0; k < 3; ++k) p[k] += w[c] * pos[ix[t * 3 + c] * 3 + k];
+		truth.insert(truth.end(), p, p + 3);
+		const float shift = float(planted_um) * 1e-6f;
+		query.insert(query.end(), { p[0] + shift * -p[2] / 0.1f, p[1], p[2] + shift * p[0] / 0.1f });
+	}
+	const rm::Closest c = rm::closest_points(pos, ix, query);
+	float worst = 0;
+	for (size_t q = 0; q < truth.size() / 3; ++q) {
+		const int t = c.triangle[q];
+		float r[3] = { 0, 0, 0 };
+		for (int k = 0; k < 3; ++k)
+			for (int v = 0; v < 3; ++v) r[k] += c.bary[q * 3 + v] * pos[ix[t * 3 + v] * 3 + k];
+		const float d = std::sqrt((r[0] - truth[q * 3]) * (r[0] - truth[q * 3]) + (r[1] - truth[q * 3 + 1]) * (r[1] - truth[q * 3 + 1]) + (r[2] - truth[q * 3 + 2]) * (r[2] - truth[q * 3 + 2]));
+		worst = std::max(worst, d);
+	}
+	const float tol_mm = 0.01f;
+	char line[200];
+	std::snprintf(line, sizeof line, "%s transfer %zu queries worst %.4f mm; tolerance %.2f mm; planted %lld um",
+		worst * 1000.0f <= tol_mm ? "PASS" : "FAIL", truth.size() / 3, worst * 1000.0f, tol_mm, (long long)planted_um);
+	return Variant(String(line));
+}
+
+// Alpha gate: a 32 x 32 unit plane whose texture is transparent for u < 0.5
+// must keep exactly half its triangles. planted != 0 makes the texture opaque.
+static Variant gate_alpha(int64_t planted) {
+	const int n = 32;
+	std::vector<float> uv;
+	std::vector<unsigned> ix;
+	for (int j = 0; j <= n; ++j)
+		for (int i = 0; i <= n; ++i) { uv.push_back(float(i) / n); uv.push_back(float(j) / n); }
+	for (int j = 0; j < n; ++j)
+		for (int i = 0; i < n; ++i) {
+			const unsigned a = j * (n + 1) + i, b = a + n + 1;
+			ix.insert(ix.end(), { a, b, a + 1, a + 1, b, b + 1 });
+		}
+	const int w = 64, h = 64;
+	std::vector<uint8_t> alpha(w * h);
+	for (int y = 0; y < h; ++y)
+		for (int x = 0; x < w; ++x) alpha[y * w + x] = (planted || x >= w / 2) ? 255 : 0;
+	const size_t kept = rm::alpha_cull(uv, ix, alpha, w, h, 128).size() / 3, want = size_t(n * n);
+	char line[160];
+	std::snprintf(line, sizeof line, "%s alpha kept %zu of %zu triangles; want %zu; planted %lld",
+		kept == want ? "PASS" : "FAIL", kept, ix.size() / 3, want, (long long)planted);
+	return Variant(String(line));
+}
+
 int main() {
 	ADD_API_FUNCTION(version, "String", "", "meshoptimizer version and manifest pin");
 	ADD_API_FUNCTION(remesh, "Array", "PackedVector3Array positions, PackedInt32Array indices, int resolution, int options, int target_triangles", "voxel remesh, weld, simplify; returns [positions, indices, error]");
 	ADD_API_FUNCTION(simplify, "Array", "PackedVector3Array positions, PackedInt32Array indices, PackedFloat32Array attributes, PackedFloat32Array weights, int target_index_count, float target_error, int options", "attribute-aware simplify; returns [indices, error]");
 	ADD_API_FUNCTION(gate, "String", "int planted_um", "sphere gate; planted_um > tolerance must FAIL");
+	ADD_API_FUNCTION(closest, "Array", "PackedVector3Array src_positions, PackedInt32Array src_indices, PackedVector3Array query", "closest source triangle and barycentrics per query; returns [triangles, barycentrics]");
+	ADD_API_FUNCTION(alpha_cull, "PackedInt32Array", "PackedVector2Array uvs, PackedInt32Array indices, PackedByteArray alpha, int width, int height, int threshold", "drop mostly transparent triangles; the kept indices");
+	ADD_API_FUNCTION(gate_transfer, "String", "int planted_um", "transfer gate; a planted tangential shift must FAIL");
+	ADD_API_FUNCTION(gate_alpha, "String", "int planted", "alpha gate; planted != 0 must FAIL");
 	halt();
 }

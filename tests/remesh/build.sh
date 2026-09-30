@@ -1,7 +1,8 @@
 #!/bin/sh
-# Build remesh.elf and run its sphere gate through the sandbox host's probe.
-# The gate remeshes and simplifies a 0.1 m sphere, whose surface is analytic,
-# and passes within half a voxel; the planted 2 mm control must fail.
+# Build remesh.elf and run its gates through the sandbox host's probe: the
+# sphere remesh and simplify (half a voxel; planted 2 mm fails), the surface
+# transfer (0.01 mm; planted 0.5 mm tangential shift fails) and the alpha
+# cull (exactly half a split plane kept; a planted opaque texture fails).
 #
 #   SANDBOX_API=<sandbox-api> MESHOPTIMIZER_DIR=<meshoptimizer> \
 #   RV64_TOOLCHAIN=<riscv64-sysroot>/toolchain.cmake \
@@ -17,10 +18,16 @@ cmake -S "$ROOT/guest/remesh" -B "$OUT" -G Ninja -DCMAKE_BUILD_TYPE=Release \
 cmake --build "$OUT"
 echo "built $OUT/remesh"
 [ -n "$PROBE" ] || exit 0
-clean=$("$PROBE" "$HOST_LIB" call "$OUT/remesh" gate i:0 | grep '^rc')
-planted=$("$PROBE" "$HOST_LIB" call "$OUT/remesh" gate i:2000 | grep '^rc')
-echo "$clean"
-echo "$planted"
-case "$clean" in *"result PASS"*) ;; *) echo "gate: clean sphere did not pass"; exit 1;; esac
-case "$planted" in *"result FAIL"*) ;; *) echo "gate: planted 2 mm control did not fail"; exit 1;; esac
-echo "gate: PASS, control: FAIL as planted"
+# Each gate must PASS clean and FAIL with its planted defect.
+check() { # name clean-arg planted-arg
+  clean=$("$PROBE" "$HOST_LIB" call "$OUT/remesh" "$1" "$2" | grep '^rc')
+  planted=$("$PROBE" "$HOST_LIB" call "$OUT/remesh" "$1" "$3" | grep '^rc')
+  echo "$clean"
+  echo "$planted"
+  case "$clean" in *"result PASS"*) ;; *) echo "$1: clean run did not pass"; exit 1;; esac
+  case "$planted" in *"result FAIL"*) ;; *) echo "$1: planted control did not fail"; exit 1;; esac
+}
+check gate i:0 i:2000
+check gate_transfer i:0 i:500
+check gate_alpha i:0 i:1
+echo "gates: PASS, controls: FAIL as planted"
