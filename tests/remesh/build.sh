@@ -4,7 +4,8 @@
 # transfer (0.01 mm; planted 0.5 mm tangential shift fails) and the alpha
 # cull (exactly half a split plane kept; a planted opaque texture fails) and
 # the LOD chain (measured sag within 2x the reported error; a planted 10x
-# under-report fails).
+# under-report fails) and the avatar pipeline (atlas, attribute transfer and
+# the shared error budget, each with its own planted defect).
 #
 #   SANDBOX_API=<sandbox-api> MESHOPTIMIZER_DIR=<meshoptimizer> \
 #   RV64_TOOLCHAIN=<riscv64-sysroot>/toolchain.cmake \
@@ -33,4 +34,7 @@ check gate i:0 i:2000
 check gate_transfer i:0 i:500
 check gate_alpha i:0 i:1
 check gate_lod i:1 i:10
+check gate_avatar i:0 i:1
+check gate_avatar i:0 i:2
+check gate_avatar i:0 i:3
 echo "gates: PASS, controls: FAIL as planted"

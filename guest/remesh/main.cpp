@@ -3,6 +3,7 @@
 // arrays; it has no file, socket or host-object access.
 #include <api.hpp>
 #include <meshoptimizer.h>
+#include "avatar.h"
 #include "lod.h"
 #include "transfer.h"
 #include <algorithm>
@@ -285,6 +286,173 @@ static Variant gate_lod(int64_t planted_scale) {
 	return Variant(String(std::string(head) + lines));
 }
 
+// The avatar pipeline (avatar.h). A host passes its meshes and textures as flat
+// arrays and writes the results back; every decision is made here.
+
+static std::vector<int32_t> ints_of(const PackedInt32Array &a) { return a.fetch(); }
+
+static rm::Stream stream_of(PackedFloat32Array vertices, PackedInt32Array bones, PackedFloat32Array shapes, PackedInt32Array indices, PackedInt32Array ends) {
+	rm::Stream s;
+	s.vertices = vertices.fetch();
+	s.bones = bones.fetch();
+	s.shapes = shapes.fetch();
+	s.indices = indices_of(indices);
+	s.ends = ends.fetch();
+	return s;
+}
+
+// One error threshold in metres for every submesh of every mesh (Godot's
+// metric); vertices global across meshes. [indices, ends, errors_m, threshold_m, triangles]
+static Variant avatar_budget(PackedVector3Array positions, PackedVector3Array normals, PackedInt32Array indices, PackedInt32Array ends, int64_t target_triangles) {
+	const rm::Budget b = rm::budget(flat(positions), flat(normals), indices_of(indices), ints_of(ends), size_t(target_triangles));
+	return Variant(Array::make(Variant(packed(b.indices, b.indices.size())), Variant(PackedInt32Array(b.ends)), Variant(PackedFloat32Array(b.errors_m)), Variant(double(b.threshold_m)), Variant(int64_t(b.triangles))));
+}
+
+// Voxel remesh with every attribute carried back. [vertices, bones, shapes, indices, ends]
+static Variant avatar_remesh(PackedFloat32Array vertices, PackedInt32Array bones, PackedFloat32Array shapes, PackedInt32Array indices, PackedInt32Array ends, int64_t resolution, int64_t target_triangles) {
+	const rm::Stream o = rm::remesh_stream(stream_of(vertices, bones, shapes, indices, ends), int(resolution), size_t(target_triangles));
+	return Variant(Array::make(Variant(PackedFloat32Array(o.vertices)), Variant(PackedInt32Array(o.bones)), Variant(PackedFloat32Array(o.shapes)), Variant(packed(o.indices, o.indices.size())), Variant(PackedInt32Array(o.ends))));
+}
+
+// [remap old -> new or -1, indices]
+static Variant avatar_compact(PackedInt32Array indices, int64_t vertex_count) {
+	std::vector<unsigned> ix = indices_of(indices);
+	const std::vector<int32_t> remap = rm::compact_remap(ix, size_t(vertex_count));
+	return Variant(Array::make(Variant(PackedInt32Array(remap)), Variant(packed(ix, ix.size()))));
+}
+
+// RGBA8 textures back to back, sizes as w, h pairs. [rgba, rects, scale_down]
+static Variant avatar_atlas(PackedByteArray pixels, PackedInt32Array sizes, int64_t size) {
+	const rm::Atlas a = rm::atlas(pixels.fetch(), ints_of(sizes), int(size));
+	return Variant(Array::make(Variant(PackedArray<uint8_t>(a.rgba)), Variant(PackedFloat32Array(a.rects)), Variant(int64_t(a.scale_down))));
+}
+
+// uv as u, v pairs. [picks, uv, indices, wrapped]
+static Variant avatar_atlas_mesh(PackedFloat32Array uv, PackedInt32Array indices, PackedInt32Array ends, PackedInt32Array texture_of_submesh, PackedFloat32Array rects) {
+	const rm::AtlasMesh m = rm::atlas_mesh(uv.fetch(), indices_of(indices), ints_of(ends), ints_of(texture_of_submesh), rects.fetch());
+	return Variant(Array::make(Variant(PackedInt32Array(m.picks)), Variant(PackedFloat32Array(m.uv)), Variant(packed(m.indices, m.indices.size())), Variant(int64_t(m.wrapped))));
+}
+
+static Variant avatar_hide_shape(PackedVector3Array positions, PackedInt32Array bones, PackedFloat32Array weights, PackedVector3Array bone_origins) {
+	const std::vector<float> d = rm::hide_shape(flat(positions), ints_of(bones), weights.fetch(), flat(bone_origins));
+	std::vector<Vector3> v(d.size() / 3);
+	for (size_t i = 0; i < v.size(); ++i) v[i] = Vector3(d[i * 3], d[i * 3 + 1], d[i * 3 + 2]);
+	return Variant(PackedVector3Array(v));
+}
+
+// Avatar gate, clean at planted 0. Each planted defect must FAIL:
+// 1 moves atlas rect 1 onto rect 0; 2 doubles the remeshed blendshape deltas;
+// 3 halves the budget threshold, so the result no longer fits.
+static Variant gate_avatar(int64_t planted) {
+	std::string report;
+	bool pass = true;
+	auto note = [&](bool ok, const std::string &what) { pass = pass && ok; report += (ok ? "  ok   " : "  FAIL ") + what + "\n"; };
+	char buf[200];
+
+	// Atlas: three solid textures must land apart, each with its own colour.
+	{
+		const int sz[3][2] = { { 32, 32 }, { 16, 48 }, { 24, 8 } };
+		const uint8_t col[3][3] = { { 255, 0, 0 }, { 0, 255, 0 }, { 0, 0, 255 } };
+		std::vector<uint8_t> px;
+		std::vector<int32_t> sizes;
+		for (int i = 0; i < 3; ++i) {
+			sizes.push_back(sz[i][0]); sizes.push_back(sz[i][1]);
+			for (int k = 0; k < sz[i][0] * sz[i][1]; ++k) px.insert(px.end(), { col[i][0], col[i][1], col[i][2], 255 });
+		}
+		rm::Atlas a = rm::atlas(px, sizes, 64);
+		if (planted == 1) { a.rects[4] = a.rects[0]; a.rects[5] = a.rects[1]; }
+		bool apart = true, colours = true;
+		for (int i = 0; i < 3; ++i) {
+			const float *r = &a.rects[i * 4];
+			for (int j = 0; j < i; ++j) {
+				const float *q = &a.rects[j * 4];
+				if (r[0] < q[0] + q[2] && q[0] < r[0] + r[2] && r[1] < q[1] + q[3] && q[1] < r[1] + r[3]) apart = false;
+			}
+			const int cx = int((r[0] + r[2] / 2) * 64), cy = int((r[1] + r[3] / 2) * 64);
+			const uint8_t *p = &a.rgba[(size_t(cy) * 64 + cx) * 4];
+			if (p[0] != col[i][0] || p[1] != col[i][1] || p[2] != col[i][2]) colours = false;
+		}
+		std::snprintf(buf, sizeof buf, "atlas: 3 textures in 64 px, halved %d times, rects apart %d, colours at centres %d", a.scale_down, apart, colours);
+		note(apart && colours, buf);
+	}
+
+	// Remesh: a 0.1 m sphere whose one blendshape pushes out 1 cm along the
+	// normal and whose weights split by height; both must survive transfer.
+	{
+		std::vector<float> pos;
+		std::vector<unsigned> ix;
+		sphere(pos, ix, 0.1f, 48);
+		rm::Stream s;
+		const size_t nv = pos.size() / 3;
+		s.vertices.assign(nv * rm::kStride, 0);
+		s.bones.assign(nv * 4, 0);
+		s.shapes.assign(nv * 3, 0);
+		for (size_t v = 0; v < nv; ++v) {
+			float *d = &s.vertices[v * rm::kStride];
+			for (int k = 0; k < 3; ++k) { d[k] = pos[v * 3 + k]; d[3 + k] = pos[v * 3 + k] / 0.1f; s.shapes[v * 3 + k] = pos[v * 3 + k] / 0.1f * 0.01f; }
+			d[6] = 0.5f; d[7] = 0.5f;
+			const float up = 0.5f + pos[v * 3 + 1] / 0.2f;
+			d[8] = up; d[9] = 1 - up;
+			s.bones[v * 4] = 0; s.bones[v * 4 + 1] = 1;
+		}
+		s.indices = ix;
+		s.ends = { int32_t(ix.size()) };
+		rm::Stream o = rm::remesh_stream(s, 64, 1500);
+		if (planted == 2) for (float &x : o.shapes) x *= 2;
+		const size_t on = o.vertex_count();
+		float worst_shape = 0, worst_sum = 0, worst_w = 0;
+		for (size_t v = 0; v < on; ++v) {
+			const float *d = &o.vertices[v * rm::kStride];
+			const float r = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+			for (int k = 0; k < 3; ++k) worst_shape = std::max(worst_shape, std::fabs(o.shapes[v * 3 + k] - d[k] / r * 0.01f));
+			float sum = 0, w_up = 0;
+			for (int k = 0; k < 4; ++k) { sum += d[8 + k]; if (o.bones[v * 4 + k] == 0) w_up += d[8 + k]; }
+			worst_sum = std::max(worst_sum, std::fabs(sum - 1));
+			worst_w = std::max(worst_w, std::fabs(w_up - (0.5f + d[1] / 0.2f)));
+		}
+		std::snprintf(buf, sizeof buf, "remesh: %zu tris; shape error %.3f mm (tol 0.5), weight sum error %.5f, weight error %.3f (tol 0.05)", o.indices.size() / 3, worst_shape * 1000, worst_sum, worst_w);
+		note(o.indices.size() > 0 && worst_shape <= 0.0005f && worst_sum <= 1e-4f && worst_w <= 0.05f, buf);
+	}
+
+	// Budget: two spheres, 0.1 m and 0.05 m, share 4000 triangles; every
+	// submesh's chosen error is at or under one threshold, and it fits.
+	{
+		std::vector<float> a, b, pos, nrm;
+		std::vector<unsigned> ia, ib, ix;
+		sphere(a, ia, 0.1f, 64);
+		sphere(b, ib, 0.05f, 64);
+		pos = a;
+		pos.insert(pos.end(), b.begin(), b.end());
+		const unsigned off = unsigned(a.size() / 3);
+		ix = ia;
+		for (unsigned i : ib) ix.push_back(i + off);
+		nrm.resize(pos.size());
+		for (size_t v = 0; v < pos.size() / 3; ++v) {
+			const float r = v < off ? 0.1f : 0.05f;
+			for (int k = 0; k < 3; ++k) nrm[v * 3 + k] = pos[v * 3 + k] / r;
+		}
+		const std::vector<int32_t> ends = { int32_t(ia.size()), int32_t(ix.size()) };
+		rm::Budget bu = rm::budget(pos, nrm, ix, ends, 4000);
+		if (planted == 3) {
+			// Recount at half the threshold, as if the search had stopped short.
+			bu.triangles = 0;
+			for (size_t sub = 0, st = 0; sub < ends.size(); st = size_t(ends[sub]), ++sub) {
+				const auto chain = rm::lod_chain(pos, nrm, std::vector<unsigned>(ix.begin() + st, ix.begin() + ends[sub]), true);
+				size_t k = 0;
+				while (k + 1 < chain.size() && chain[k + 1].error_m <= bu.threshold_m / 2) ++k;
+				bu.triangles += chain[k].indices.size() / 3;
+			}
+		}
+		bool under = true;
+		for (float e : bu.errors_m) under = under && e <= bu.threshold_m + 1e-9f;
+		std::snprintf(buf, sizeof buf, "budget: %zu tris of 4000 at %.3f mm; submesh errors %.3f and %.3f mm", bu.triangles, bu.threshold_m * 1000, bu.errors_m[0] * 1000, bu.errors_m[1] * 1000);
+		note(bu.triangles <= 4000 && under, buf);
+	}
+
+	std::snprintf(buf, sizeof buf, "%s avatar gate; planted %lld\n", pass ? "PASS" : "FAIL", (long long)planted);
+	return Variant(String(std::string(buf) + report));
+}
+
 int main() {
 	ADD_API_FUNCTION(version, "String", "", "meshoptimizer version and manifest pin");
 	ADD_API_FUNCTION(remesh, "Array", "PackedVector3Array positions, PackedInt32Array indices, int resolution, int options, int target_triangles", "voxel remesh, weld, simplify; returns [positions, indices, error]");
@@ -296,5 +464,12 @@ int main() {
 	ADD_API_FUNCTION(gate_alpha, "String", "int planted", "alpha gate; planted != 0 must FAIL");
 	ADD_API_FUNCTION(lod_chain, "Array", "PackedVector3Array positions, PackedVector3Array normals, PackedInt32Array indices, bool deformable", "Godot-style LOD chain; [indices, ends, errors_m]");
 	ADD_API_FUNCTION(gate_lod, "String", "int planted_scale", "LOD gate; planted_scale > 1 under-reports and must FAIL");
+	ADD_API_FUNCTION(avatar_budget, "Array", "PackedVector3Array positions, PackedVector3Array normals, PackedInt32Array indices, PackedInt32Array ends, int target_triangles", "one error threshold across meshes; [indices, ends, errors_m, threshold_m, triangles]");
+	ADD_API_FUNCTION(avatar_remesh, "Array", "PackedFloat32Array vertices, PackedInt32Array bones, PackedFloat32Array shapes, PackedInt32Array indices, PackedInt32Array ends, int resolution, int target_triangles", "voxel remesh with attributes; [vertices, bones, shapes, indices, ends]");
+	ADD_API_FUNCTION(avatar_compact, "Array", "PackedInt32Array indices, int vertex_count", "[remap, indices]");
+	ADD_API_FUNCTION(avatar_atlas, "Array", "PackedByteArray pixels, PackedInt32Array sizes, int size", "[rgba, rects, scale_down]");
+	ADD_API_FUNCTION(avatar_atlas_mesh, "Array", "PackedFloat32Array uv, PackedInt32Array indices, PackedInt32Array ends, PackedInt32Array texture_of_submesh, PackedFloat32Array rects", "[picks, uv, indices, wrapped]");
+	ADD_API_FUNCTION(avatar_hide_shape, "PackedVector3Array", "PackedVector3Array positions, PackedInt32Array bones, PackedFloat32Array weights, PackedVector3Array bone_origins", "deltas onto each vertex's heaviest bone");
+	ADD_API_FUNCTION(gate_avatar, "String", "int planted", "avatar gate; planted 1..3 must FAIL");
 	halt();
 }
