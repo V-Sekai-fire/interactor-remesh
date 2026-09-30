@@ -13,7 +13,7 @@ Unity Editor's sandbox host.
 | `simplify(positions, indices, attributes, weights, target_index_count, target_error, options)` | `[indices, error]` into the original vertices |
 | `closest(src_positions, src_indices, query)` | `[triangles, barycentrics]`: the closest source surface point per query, for transferring attributes back |
 | `alpha_cull(uvs, indices, alpha, width, height, threshold)` | the indices of triangles whose texture is not mostly transparent |
-| `lod_chain(positions, normals, indices, deformable)` | `[indices, error_m, ...]`: Godot's LOD chain, each level with its error in metres |
+| `lod_chain(positions, normals, indices, deformable)` | `[indices, ends, errors_m]`: Godot's LOD chain, levels back to back with each level's error in metres |
 | `gate`, `gate_transfer`, `gate_alpha`, `gate_lod` | each gate's verdict line |
 
 `meshopt_remesh` is experimental in meshoptimizer 1.3 and writes positions

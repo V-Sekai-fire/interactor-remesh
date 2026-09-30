@@ -228,16 +228,20 @@ static Variant gate_alpha(int64_t planted) {
 	return Variant(String(line));
 }
 
-// Godot's LOD chain (see lod.h): [indices_0, error_m_0, indices_1, error_m_1, ...],
-// level 0 the input with zero error, errors in metres and non-decreasing.
+// Godot's LOD chain (see lod.h): [indices, ends, errors_m]. indices holds every
+// level back to back, level k spanning [ends[k-1], ends[k]); level 0 is the
+// input with zero error, and the errors are in metres and non-decreasing.
+// Three packed arrays through Array::make, the path every host implements.
 static Variant lod_chain(PackedVector3Array positions, PackedVector3Array normals, PackedInt32Array indices, bool deformable) {
 	const std::vector<rm::Lod> chain = rm::lod_chain(flat(positions), flat(normals), indices_of(indices), deformable);
-	Array out = Array::Create();
+	std::vector<int32_t> all, ends;
+	std::vector<float> errors;
 	for (const rm::Lod &l : chain) {
-		out.push_back(Variant(packed(l.indices, l.indices.size())));
-		out.push_back(Variant(double(l.error_m)));
+		all.insert(all.end(), l.indices.begin(), l.indices.end());
+		ends.push_back(int32_t(all.size()));
+		errors.push_back(l.error_m);
 	}
-	return Variant(out);
+	return Variant(Array::make(Variant(PackedInt32Array(all)), Variant(PackedInt32Array(ends)), Variant(PackedFloat32Array(errors))));
 }
 
 // LOD gate: on a 0.1 m sphere the chain's errors must not decrease, and each
@@ -290,7 +294,7 @@ int main() {
 	ADD_API_FUNCTION(alpha_cull, "PackedInt32Array", "PackedVector2Array uvs, PackedInt32Array indices, PackedByteArray alpha, int width, int height, int threshold", "drop mostly transparent triangles; the kept indices");
 	ADD_API_FUNCTION(gate_transfer, "String", "int planted_um", "transfer gate; a planted tangential shift must FAIL");
 	ADD_API_FUNCTION(gate_alpha, "String", "int planted", "alpha gate; planted != 0 must FAIL");
-	ADD_API_FUNCTION(lod_chain, "Array", "PackedVector3Array positions, PackedVector3Array normals, PackedInt32Array indices, bool deformable", "Godot-style LOD chain; [indices, error_m, ...]");
+	ADD_API_FUNCTION(lod_chain, "Array", "PackedVector3Array positions, PackedVector3Array normals, PackedInt32Array indices, bool deformable", "Godot-style LOD chain; [indices, ends, errors_m]");
 	ADD_API_FUNCTION(gate_lod, "String", "int planted_scale", "LOD gate; planted_scale > 1 under-reports and must FAIL");
 	halt();
 }
