@@ -22,18 +22,27 @@ struct Stream {
 	size_t shape_count() const { return vertex_count() ? shapes.size() / (vertex_count() * 3) : 0; }
 };
 
-// Godot's quality metric across several meshes at once: each submesh's LOD
-// chain (lod.h) and the smallest error in metres at which all of them fit
+// Godot's quality metric across several meshes at once: each submesh's
+// levels (lod_levels in lod.h) and the smallest error in metres at which all of them fit
 // target_triangles. Vertices are global across the meshes; the result keeps
 // the submesh layout. errors_m holds each submesh's chosen level's error.
+// Godot selects a level by screen coverage: a level is used once its error,
+// projected at the camera's distance, is under mesh_lod_threshold pixels (1.0
+// by default). one_pixel_m is that condition for this budget: beyond it the
+// chosen error covers less than one pixel of a viewport viewport_px tall with
+// a vertical field of view of fov_deg.
 struct Budget {
 	std::vector<unsigned> indices;
 	std::vector<int32_t> ends;
 	std::vector<float> errors_m;
 	float threshold_m = 0;
+	float one_pixel_m = 0;
 	size_t triangles = 0;
 };
-Budget budget(const std::vector<float> &positions, const std::vector<float> &normals, const std::vector<unsigned> &indices, const std::vector<int32_t> &ends, size_t target_triangles);
+Budget budget(const std::vector<float> &positions, const std::vector<float> &normals, const std::vector<unsigned> &indices, const std::vector<int32_t> &ends, size_t target_triangles, int viewport_px = 0, float fov_deg = 0);
+
+// Metres from the camera beyond which an error of error_m spans under one pixel.
+float one_pixel_distance(float error_m, int viewport_px, float fov_deg);
 
 // Voxel remesh a whole mesh and carry every attribute back: normals, skin
 // weights and blendshapes blend from each corner's closest source point; UVs

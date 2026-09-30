@@ -301,11 +301,13 @@ static rm::Stream stream_of(PackedFloat32Array vertices, PackedInt32Array bones,
 	return s;
 }
 
-// One error threshold in metres for every submesh of every mesh (Godot's
-// metric); vertices global across meshes. [indices, ends, errors_m, threshold_m, triangles]
-static Variant avatar_budget(PackedVector3Array positions, PackedVector3Array normals, PackedInt32Array indices, PackedInt32Array ends, int64_t target_triangles) {
-	const rm::Budget b = rm::budget(flat(positions), flat(normals), indices_of(indices), ints_of(ends), size_t(target_triangles));
-	return Variant(Array::make(Variant(packed(b.indices, b.indices.size())), Variant(PackedInt32Array(b.ends)), Variant(PackedFloat32Array(b.errors_m)), Variant(double(b.threshold_m)), Variant(int64_t(b.triangles))));
+// One error threshold for every submesh of every mesh (Godot's metric), with
+// the viewing condition Godot selects by: the distance beyond which it covers
+// under one pixel of a viewport_px tall, fov_deg view. Vertices global across
+// meshes. [indices, ends, errors_m, threshold_m, triangles, one_pixel_m]
+static Variant avatar_budget(PackedVector3Array positions, PackedVector3Array normals, PackedInt32Array indices, PackedInt32Array ends, int64_t target_triangles, int64_t viewport_px, double fov_deg) {
+	const rm::Budget b = rm::budget(flat(positions), flat(normals), indices_of(indices), ints_of(ends), size_t(target_triangles), int(viewport_px), float(fov_deg));
+	return Variant(Array::make(Variant(packed(b.indices, b.indices.size())), Variant(PackedInt32Array(b.ends)), Variant(PackedFloat32Array(b.errors_m)), Variant(double(b.threshold_m)), Variant(int64_t(b.triangles)), Variant(double(b.one_pixel_m))));
 }
 
 // Voxel remesh with every attribute carried back. [vertices, bones, shapes, indices, ends]
@@ -447,6 +449,10 @@ static Variant gate_avatar(int64_t planted) {
 		for (float e : bu.errors_m) under = under && e <= bu.threshold_m + 1e-9f;
 		std::snprintf(buf, sizeof buf, "budget: %zu tris of 4000 at %.3f mm; submesh errors %.3f and %.3f mm", bu.triangles, bu.threshold_m * 1000, bu.errors_m[0] * 1000, bu.errors_m[1] * 1000);
 		note(bu.triangles <= 4000 && under, buf);
+		// 1 mm on a 1000 px, 90 degree view spans one pixel at exactly 0.5 m.
+		const float d = rm::one_pixel_distance(0.001f, 1000, 90.0f);
+		std::snprintf(buf, sizeof buf, "screen coverage: 1 mm is one pixel of a 1000 px, 90 degree view at %.4f m (want 0.5000)", d);
+		note(std::fabs(d - 0.5f) < 1e-4f, buf);
 	}
 
 	std::snprintf(buf, sizeof buf, "%s avatar gate; planted %lld\n", pass ? "PASS" : "FAIL", (long long)planted);
@@ -464,7 +470,7 @@ int main() {
 	ADD_API_FUNCTION(gate_alpha, "String", "int planted", "alpha gate; planted != 0 must FAIL");
 	ADD_API_FUNCTION(lod_chain, "Array", "PackedVector3Array positions, PackedVector3Array normals, PackedInt32Array indices, bool deformable", "Godot-style LOD chain; [indices, ends, errors_m]");
 	ADD_API_FUNCTION(gate_lod, "String", "int planted_scale", "LOD gate; planted_scale > 1 under-reports and must FAIL");
-	ADD_API_FUNCTION(avatar_budget, "Array", "PackedVector3Array positions, PackedVector3Array normals, PackedInt32Array indices, PackedInt32Array ends, int target_triangles", "one error threshold across meshes; [indices, ends, errors_m, threshold_m, triangles]");
+	ADD_API_FUNCTION(avatar_budget, "Array", "PackedVector3Array positions, PackedVector3Array normals, PackedInt32Array indices, PackedInt32Array ends, int target_triangles, int viewport_px, float fov_deg", "one error threshold across meshes and its one-pixel distance; [indices, ends, errors_m, threshold_m, triangles, one_pixel_m]");
 	ADD_API_FUNCTION(avatar_remesh, "Array", "PackedFloat32Array vertices, PackedInt32Array bones, PackedFloat32Array shapes, PackedInt32Array indices, PackedInt32Array ends, int resolution, int target_triangles", "voxel remesh with attributes; [vertices, bones, shapes, indices, ends]");
 	ADD_API_FUNCTION(avatar_compact, "Array", "PackedInt32Array indices, int vertex_count", "[remap, indices]");
 	ADD_API_FUNCTION(avatar_atlas, "Array", "PackedByteArray pixels, PackedInt32Array sizes, int size", "[rgba, rects, scale_down]");

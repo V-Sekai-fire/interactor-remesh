@@ -14,7 +14,7 @@ sandbox host of any other game engine's editor.
 | `closest(src_positions, src_indices, query)` | `[triangles, barycentrics]`: the closest source surface point per query, for transferring attributes back |
 | `alpha_cull(uvs, indices, alpha, width, height, threshold)` | the indices of triangles whose texture is not mostly transparent |
 | `lod_chain(positions, normals, indices, deformable)` | `[indices, ends, errors_m]`: Godot's LOD chain, levels back to back with each level's error in metres |
-| `avatar_budget(positions, normals, indices, ends, target_triangles)` | `[indices, ends, errors_m, threshold_m, triangles]`: one error threshold in metres across every submesh of every mesh |
+| `avatar_budget(positions, normals, indices, ends, target_triangles, viewport_px, fov_deg)` | `[indices, ends, errors_m, threshold_m, triangles, one_pixel_m]`: one error threshold across every submesh of every mesh, and the distance beyond which it covers under one pixel |
 | `avatar_remesh(vertices, bones, shapes, indices, ends, resolution, target_triangles)` | the remeshed mesh with normals, UVs, skin weights and blendshapes carried back |
 | `avatar_compact(indices, vertex_count)` | `[remap, indices]` dropping unreferenced vertices |
 | `avatar_atlas(pixels, sizes, size)` | `[rgba, rects, scale_down]`: RGBA8 textures shelf-packed into one atlas |
@@ -37,6 +37,13 @@ normals as attributes at weight 1, `SPARSE | LOCK_BORDER | PRUNE`, plus
 kept monotonic with `max(error * 1.5, step)`, and it stops past a relative
 error of 1.0 or when a step removes less than a quarter. `meshopt_simplifyScale`
 turns the relative error into metres, so one threshold compares any meshes.
+Godot then selects by screen coverage: a level is drawn once its error,
+projected at the camera's distance, spans under `mesh_lod_threshold` pixels
+(1.0 by default). `avatar_budget` reports its threshold the same way, as the
+distance beyond which it spans under one pixel of a given viewport and field
+of view. Its levels are simplified from the source each time, 0.8 of the
+previous target, so each error is the true error rather than Godot's
+1.5x-per-level bound for monotonic switching.
 Unlike Godot it does not pre-merge vertices by normal angle; meshoptimizer
 already treats co-located vertices as seams.
 

@@ -16,4 +16,11 @@ struct Lod {
 // Level 0 is the input itself, with zero error.
 std::vector<Lod> lod_chain(const std::vector<float> &positions, const std::vector<float> &normals, const std::vector<unsigned> &indices, bool deformable);
 
+// Levels for choosing one error across many meshes. Godot's metric (the same
+// attributes and options, result_error times meshopt_simplifyScale), but every
+// level is simplified from the input rather than from the previous level, and
+// the target steps by `ratio`: each error is then the true error against the
+// source, not Godot's 1.5x-per-step bound meant for monotonic LOD switching.
+std::vector<Lod> lod_levels(const std::vector<float> &positions, const std::vector<float> &normals, const std::vector<unsigned> &indices, bool deformable, float ratio = 0.8f);
+
 } // namespace rm

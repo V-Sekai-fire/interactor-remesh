@@ -32,12 +32,18 @@ void barycentric(const float *p, const float *a, const float *b, const float *c,
 
 } // namespace
 
-Budget budget(const std::vector<float> &positions, const std::vector<float> &normals, const std::vector<unsigned> &indices, const std::vector<int32_t> &ends, size_t target_triangles) {
+float one_pixel_distance(float error_m, int viewport_px, float fov_deg) {
+	if (viewport_px <= 0 || fov_deg <= 0) return 0;
+	// A pixel at distance d spans 2 d tan(fov / 2) / viewport_px metres.
+	return error_m * viewport_px / (2.0f * std::tan(fov_deg * 3.14159265f / 360.0f));
+}
+
+Budget budget(const std::vector<float> &positions, const std::vector<float> &normals, const std::vector<unsigned> &indices, const std::vector<int32_t> &ends, size_t target_triangles, int viewport_px, float fov_deg) {
 	std::vector<std::vector<Lod>> chains;
 	for (size_t s = 0, start = 0; s < ends.size(); start = size_t(ends[s]), ++s) {
 		std::vector<unsigned> sub(indices.begin() + start, indices.begin() + ends[s]);
 		// Skinned: regularize, as Godot does for deformable meshes.
-		chains.push_back(lod_chain(positions, normals, sub, true));
+		chains.push_back(lod_levels(positions, normals, sub, true));
 	}
 	auto level_at = [](const std::vector<Lod> &c, float eps) -> const Lod & {
 		size_t k = 0;
@@ -64,6 +70,7 @@ Budget budget(const std::vector<float> &positions, const std::vector<float> &nor
 		out.errors_m.push_back(l.error_m);
 	}
 	out.triangles = out.indices.size() / 3;
+	out.one_pixel_m = one_pixel_distance(out.threshold_m, viewport_px, fov_deg);
 	return out;
 }
 
