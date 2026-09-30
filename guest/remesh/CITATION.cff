@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: If you use this guest, cite meshoptimizer, whose remesher and simplifier it runs.
+title: remesh.elf -- voxel remesh and simplify for avatar meshes (sandbox guest)
+abstract: >-
+  The remesh stage of RFD 2284. The host passes positions and indices; the
+  guest returns a voxel-remeshed, welded and simplified mesh (positions
+  only), or an attribute-aware simplification that indexes the original
+  vertices so skin weights, UVs and blendshapes stay valid. The guest has no
+  filesystem, sockets or host objects.
+type: software
+authors:
+  - name: V-Sekai-fire
+license: MIT
+references:
+  - type: software
+    title: meshoptimizer
+    authors:
+      - name: Arseny Kapoulkine
+    repository-code: https://github.com/zeux/meshoptimizer
+    commit: 9e1f07b159d3cb777f1c67ed31fc11fd117986f4
+    license: MIT
