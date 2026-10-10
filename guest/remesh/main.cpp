@@ -4,6 +4,7 @@
 #include <api.hpp>
 #include <meshoptimizer.h>
 #include "avatar.h"
+#include "clod.h"
 #include "lod.h"
 #include "transfer.h"
 #include <algorithm>
@@ -459,6 +460,96 @@ static Variant gate_avatar(int64_t planted) {
 	return Variant(String(std::string(buf) + report));
 }
 
+// Cluster LOD (clod.h): [indices, clusters (group, refined, start, count per cluster),
+// cluster_bounds (centre xyz, radius), groups (depth, centre xyz, radius, error; -1 terminal),
+// positions, source]. positions and source are empty unless flags has Dilate (1).
+static Variant cluster_lod(PackedVector3Array positions, PackedFloat32Array attributes, int64_t attribute_count, PackedInt32Array indices, int64_t max_triangles, int64_t flags) {
+	const rm::Clod d = rm::cluster_lod(flat(positions), attributes.fetch(), int(attribute_count), indices_of(indices), int(max_triangles), flags);
+	std::vector<Vector3> out;
+	for (size_t k = 0; k < d.positions.size() / 3; ++k)
+		out.push_back(Vector3(d.positions[k * 3], d.positions[k * 3 + 1], d.positions[k * 3 + 2]));
+	return Variant(Array::make(Variant(PackedInt32Array(d.indices)), Variant(PackedInt32Array(d.clusters)),
+			Variant(PackedFloat32Array(d.cluster_bounds)), Variant(PackedFloat32Array(d.groups)),
+			Variant(PackedVector3Array(out)), Variant(PackedInt32Array(d.source))));
+}
+
+// Cluster LOD gate on a 0.1 m sphere of 96 x 96 quads. For each threshold the cut must:
+// at 0, be the whole input; shrink as the threshold grows; be closed (every edge between two
+// triangles, by position); and sag from the sphere no more than twice the threshold past the
+// input's own sag. planted_scale > 1 divides every group error first, so the cut is coarser
+// than its threshold claims, and the sag check must FAIL.
+static Variant gate_clod(int64_t planted_scale) {
+	const int64_t flags = 0;
+	std::vector<float> pos;
+	std::vector<unsigned> ix;
+	const float r = 0.1f;
+	sphere(pos, ix, r, 96);
+	// Weld the seam and poles (they differ by float noise) on a 1 um grid and drop the poles'
+	// degenerate triangles, so the input is closed and every edge has two triangles.
+	std::vector<float> grid(pos.size());
+	for (size_t k = 0; k < pos.size(); ++k) grid[k] = std::round(pos[k] * 1e6f) + 0.0f;
+	std::vector<unsigned> remap(pos.size() / 3);
+	meshopt_generatePositionRemap(remap.data(), grid.data(), pos.size() / 3, 12);
+	{
+		std::vector<unsigned> welded;
+		for (size_t k = 0; k + 2 < ix.size(); k += 3) {
+			const unsigned a = remap[ix[k]], b = remap[ix[k + 1]], c = remap[ix[k + 2]];
+			if (a != b && b != c && a != c) welded.insert(welded.end(), { a, b, c });
+		}
+		ix.swap(welded);
+	}
+	const rm::Clod d = rm::cluster_lod(pos, {}, 0, ix, 128, flags);
+	auto sag = [&](const std::vector<int32_t> &t) {
+		float worst = 0;
+		for (size_t k = 0; k + 2 < t.size(); k += 3) {
+			float c[3] = { 0, 0, 0 };
+			for (int v = 0; v < 3; ++v)
+				for (int q = 0; q < 3; ++q) c[q] += pos[t[k + v] * 3 + q] / 3.0f;
+			worst = std::max(worst, r - std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]));
+		}
+		return worst;
+	};
+	auto open_edges = [&](const std::vector<int32_t> &t) {
+		std::vector<uint64_t> e;
+		for (size_t k = 0; k + 2 < t.size(); k += 3) {
+			const unsigned a[3] = { remap[t[k]], remap[t[k + 1]], remap[t[k + 2]] };
+			if (a[0] == a[1] || a[1] == a[2] || a[0] == a[2]) continue;
+			for (int v = 0; v < 3; ++v) {
+				const uint64_t x = a[v], y = a[(v + 1) % 3];
+				e.push_back(x < y ? (x << 32 | y) : (y << 32 | x));
+			}
+		}
+		std::sort(e.begin(), e.end());
+		size_t open = 0, over = 0;
+		for (size_t i = 0; i < e.size();) {
+			size_t j = i;
+			while (j < e.size() && e[j] == e[i]) ++j;
+			if (j - i == 1) ++open;
+			if (j - i > 2) ++over;
+			i = j;
+		}
+		return open + over * 1000000;
+	};
+	const float base = sag(std::vector<int32_t>(ix.begin(), ix.end()));
+	const float scale = float(std::max<int64_t>(1, planted_scale));
+	bool pass = true;
+	std::string report;
+	char line[200];
+	size_t last = SIZE_MAX;
+	for (float t : { 0.0f, 0.00002f, 0.0001f, 0.0003f, 0.001f, 0.003f }) {
+		const std::vector<int32_t> cut = rm::clod_cut(d, t, 1.0f / scale);
+		const size_t tris = cut.size() / 3, open = open_edges(cut);
+		const float s = sag(cut);
+		const bool ok = (t > 0 || tris == ix.size() / 3) && tris <= last && open == 0 && s <= base + 2.0f * t + 1e-7f;
+		pass = pass && ok;
+		last = tris;
+		std::snprintf(line, sizeof line, "  %s threshold %.3f mm: %zu tris, %zu open edges, sag %.4f mm (limit %.4f)\n", ok ? "ok" : "BAD", t * 1000, tris, open, s * 1000, (base + 2 * t) * 1000);
+		report += line;
+	}
+	std::snprintf(line, sizeof line, "%s cluster lod: %zu groups, %zu clusters from %zu tris; flags %lld; planted_scale %lld\n", pass ? "PASS" : "FAIL", d.groups.size() / 6, d.clusters.size() / 4, ix.size() / 3, (long long)flags, (long long)planted_scale);
+	return Variant(String(std::string(line) + report));
+}
+
 int main() {
 	ADD_API_FUNCTION(version, "String", "", "meshoptimizer version and manifest pin");
 	ADD_API_FUNCTION(remesh, "Array", "PackedVector3Array positions, PackedInt32Array indices, int resolution, int options, int target_triangles", "voxel remesh, weld, simplify; returns [positions, indices, error]");
@@ -477,5 +568,7 @@ int main() {
 	ADD_API_FUNCTION(avatar_atlas_mesh, "Array", "PackedFloat32Array uv, PackedInt32Array indices, PackedInt32Array ends, PackedInt32Array texture_of_submesh, PackedFloat32Array rects", "[picks, uv, indices, wrapped]");
 	ADD_API_FUNCTION(avatar_hide_shape, "PackedVector3Array", "PackedVector3Array positions, PackedInt32Array bones, PackedFloat32Array weights, PackedVector3Array bone_origins", "deltas onto each vertex's heaviest bone");
 	ADD_API_FUNCTION(gate_avatar, "String", "int planted", "avatar gate; planted 1..3 must FAIL");
+	ADD_API_FUNCTION(cluster_lod, "Array", "PackedVector3Array positions, PackedFloat32Array attributes, int attribute_count, PackedInt32Array indices, int max_triangles, int flags", "cluster LOD DAG; [indices, clusters, cluster_bounds, groups, positions, source]");
+	ADD_API_FUNCTION(gate_clod, "String", "int planted_scale", "cluster LOD gate; planted_scale > 1 under-reports and must FAIL");
 	halt();
 }

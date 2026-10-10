@@ -5,7 +5,9 @@
 # cull (exactly half a split plane kept; a planted opaque texture fails) and
 # the LOD chain (measured sag within 2x the reported error; a planted 10x
 # under-report fails) and the avatar pipeline (atlas, attribute transfer and
-# the shared error budget, each with its own planted defect).
+# the shared error budget, each with its own planted defect) and the cluster
+# LOD (every cut closed and within twice its threshold; a planted 10x
+# under-report fails).
 #
 #   SANDBOX_API=<sandbox-api> MESHOPTIMIZER_DIR=<meshoptimizer> \
 #   RV64_TOOLCHAIN=<riscv64-sysroot>/toolchain.cmake \
@@ -37,4 +39,5 @@ check gate_lod i:1 i:10
 check gate_avatar i:0 i:1
 check gate_avatar i:0 i:2
 check gate_avatar i:0 i:3
+check gate_clod i:1 i:10
 echo "gates: PASS, controls: FAIL as planted"
