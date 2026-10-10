@@ -473,6 +473,11 @@ static Variant cluster_lod(PackedVector3Array positions, PackedFloat32Array attr
 			Variant(PackedVector3Array(out)), Variant(PackedInt32Array(d.source))));
 }
 
+// Per-frame cut (clod.h clod_select): the drawn cluster ids for one view.
+static Variant clod_select(PackedInt32Array clusters, PackedFloat32Array cluster_bounds, PackedFloat32Array groups, PackedFloat32Array view) {
+	return Variant(PackedInt32Array(rm::clod_select(clusters.fetch(), cluster_bounds.fetch(), groups.fetch(), view.fetch())));
+}
+
 // Cluster LOD gate on a 0.1 m sphere of 96 x 96 quads. For each threshold the cut must:
 // at 0, be the whole input; shrink as the threshold grows; be closed (every edge between two
 // triangles, by position); and sag from the sphere no more than twice the threshold past the
@@ -569,6 +574,7 @@ int main() {
 	ADD_API_FUNCTION(avatar_hide_shape, "PackedVector3Array", "PackedVector3Array positions, PackedInt32Array bones, PackedFloat32Array weights, PackedVector3Array bone_origins", "deltas onto each vertex's heaviest bone");
 	ADD_API_FUNCTION(gate_avatar, "String", "int planted", "avatar gate; planted 1..3 must FAIL");
 	ADD_API_FUNCTION(cluster_lod, "Array", "PackedVector3Array positions, PackedFloat32Array attributes, int attribute_count, PackedInt32Array indices, int max_triangles, int flags", "cluster LOD DAG; [indices, clusters, cluster_bounds, groups, positions, source]");
+	ADD_API_FUNCTION(clod_select, "PackedInt32Array", "PackedInt32Array clusters, PackedFloat32Array cluster_bounds, PackedFloat32Array groups, PackedFloat32Array view", "drawn cluster ids for one view: eye, error scale, culling planes");
 	ADD_API_FUNCTION(gate_clod, "String", "int planted_scale", "cluster LOD gate; planted_scale > 1 under-reports and must FAIL");
 	halt();
 }

@@ -4,6 +4,7 @@
 #include <clusterlod.h>
 #include <algorithm>
 #include <cfloat>
+#include <cmath>
 
 namespace rm {
 
@@ -84,6 +85,38 @@ std::vector<int32_t> clod_cut(const Clod &d, float threshold, float error_scale)
 			continue;
 		const int32_t s = d.clusters[c * 4 + 2], n = d.clusters[c * 4 + 3];
 		out.insert(out.end(), d.indices.begin() + s, d.indices.begin() + s + n);
+	}
+	return out;
+}
+
+std::vector<int32_t> clod_select(const std::vector<int32_t> &clusters, const std::vector<float> &cluster_bounds,
+		const std::vector<float> &groups, const std::vector<float> &view) {
+	std::vector<int32_t> out;
+	if (view.size() < 4)
+		return out;
+	const float ex = view[0], ey = view[1], ez = view[2], scale = view[3];
+	const size_t planes = std::min<size_t>(6, (view.size() - 4) / 4);
+	const size_t ng = groups.size() / 6;
+	std::vector<uint8_t> over(ng);
+	for (size_t g = 0; g < ng; ++g) {
+		const float *q = &groups[g * 6];
+		if (q[5] < 0) { over[g] = 1; continue; }
+		const float dx = q[1] - ex, dy = q[2] - ey, dz = q[3] - ez;
+		const float d = std::max(std::sqrt(dx * dx + dy * dy + dz * dz) - q[4], 0.1f);
+		over[g] = q[5] / d * scale > 1.0f;
+	}
+	for (size_t c = 0; c < clusters.size() / 4; ++c) {
+		const int32_t g = clusters[c * 4], rf = clusters[c * 4 + 1];
+		if (!over[g] || (rf >= 0 && over[rf]))
+			continue;
+		const float *b = &cluster_bounds[c * 4];
+		bool outside = false;
+		for (size_t p = 0; p < planes && !outside; ++p) {
+			const float *pl = &view[4 + p * 4];
+			outside = pl[0] * b[0] + pl[1] * b[1] + pl[2] * b[2] - pl[3] > b[3];
+		}
+		if (!outside)
+			out.push_back(int32_t(c));
 	}
 	return out;
 }

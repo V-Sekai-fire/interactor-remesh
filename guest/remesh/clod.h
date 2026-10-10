@@ -40,4 +40,11 @@ Clod cluster_lod(const std::vector<float> &positions, const std::vector<float> &
 // error first (1 for a true cut). Returns the drawn triangles' indices.
 std::vector<int32_t> clod_cut(const Clod &d, float threshold, float error_scale);
 
+// Per-frame cut for one view over a DAG's flat metadata (as cluster_lod returns it, chunks may be
+// concatenated with group ids offset): view = eye xyz, scale (proj * 0.5 * height_px / threshold_px),
+// then up to 6 culling planes as nx ny nz d (point p is outside when n.p - d > radius).
+// Returns the drawn cluster ids.
+std::vector<int32_t> clod_select(const std::vector<int32_t> &clusters, const std::vector<float> &cluster_bounds,
+		const std::vector<float> &groups, const std::vector<float> &view);
+
 } // namespace rm
