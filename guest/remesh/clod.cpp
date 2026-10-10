@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <cstring>
 
 namespace rm {
 
@@ -89,15 +90,14 @@ std::vector<int32_t> clod_cut(const Clod &d, float threshold, float error_scale)
 	return out;
 }
 
-std::vector<int32_t> clod_select(const std::vector<int32_t> &clusters, const std::vector<float> &cluster_bounds,
-		const std::vector<float> &groups, const std::vector<float> &view) {
+static std::vector<int32_t> select_core(const int32_t *clusters, size_t ncl, const float *cluster_bounds,
+		const float *groups, size_t ng, std::vector<uint8_t> &over, const std::vector<float> &view) {
 	std::vector<int32_t> out;
 	if (view.size() < 4)
 		return out;
 	const float ex = view[0], ey = view[1], ez = view[2], scale = view[3];
 	const size_t planes = std::min<size_t>(6, (view.size() - 4) / 4);
-	const size_t ng = groups.size() / 6;
-	std::vector<uint8_t> over(ng);
+	over.resize(ng);
 	for (size_t g = 0; g < ng; ++g) {
 		const float *q = &groups[g * 6];
 		if (q[5] < 0) { over[g] = 1; continue; }
@@ -105,7 +105,7 @@ std::vector<int32_t> clod_select(const std::vector<int32_t> &clusters, const std
 		const float d = std::max(std::sqrt(dx * dx + dy * dy + dz * dz) - q[4], 0.1f);
 		over[g] = q[5] / d * scale > 1.0f;
 	}
-	for (size_t c = 0; c < clusters.size() / 4; ++c) {
+	for (size_t c = 0; c < ncl; ++c) {
 		const int32_t g = clusters[c * 4], rf = clusters[c * 4 + 1];
 		if (!over[g] || (rf >= 0 && over[rf]))
 			continue;
@@ -119,6 +119,49 @@ std::vector<int32_t> clod_select(const std::vector<int32_t> &clusters, const std
 			out.push_back(int32_t(c));
 	}
 	return out;
+}
+
+std::vector<int32_t> clod_select(const std::vector<int32_t> &clusters, const std::vector<float> &cluster_bounds,
+		const std::vector<float> &groups, const std::vector<float> &view) {
+	std::vector<uint8_t> over;
+	return select_core(clusters.data(), clusters.size() / 4, cluster_bounds.data(), groups.data(), groups.size() / 6, over, view);
+}
+
+namespace {
+struct Arena {
+	std::vector<uint8_t> block; // clusters | cluster_bounds | groups, back to back
+	size_t ncl = 0, ng = 0;
+	std::vector<uint8_t> over; // per-group scratch, reused every frame
+};
+std::vector<Arena> arenas;
+} // namespace
+
+bool clod_load(int slot, const std::vector<int32_t> &clusters, const std::vector<float> &cluster_bounds,
+		const std::vector<float> &groups) {
+	if (slot < 0 || slot > 255 || clusters.size() % 4 || cluster_bounds.size() != clusters.size() || groups.size() % 6)
+		return false;
+	if (size_t(slot) >= arenas.size())
+		arenas.resize(size_t(slot) + 1);
+	Arena &a = arenas[size_t(slot)];
+	const size_t bc = clusters.size() * 4, bb = cluster_bounds.size() * 4, bg = groups.size() * 4;
+	std::vector<uint8_t>(bc + bb + bg).swap(a.block);
+	std::memcpy(a.block.data(), clusters.data(), bc);
+	std::memcpy(a.block.data() + bc, cluster_bounds.data(), bb);
+	std::memcpy(a.block.data() + bc + bb, groups.data(), bg);
+	a.ncl = clusters.size() / 4;
+	a.ng = groups.size() / 6;
+	a.over.assign(a.ng, 0);
+	return true;
+}
+
+std::vector<int32_t> clod_select_resident(int slot, const std::vector<float> &view) {
+	if (slot < 0 || size_t(slot) >= arenas.size() || arenas[size_t(slot)].ncl == 0)
+		return {};
+	Arena &a = arenas[size_t(slot)];
+	const int32_t *cl = reinterpret_cast<const int32_t *>(a.block.data());
+	const float *cb = reinterpret_cast<const float *>(a.block.data() + a.ncl * 16);
+	const float *gr = reinterpret_cast<const float *>(a.block.data() + a.ncl * 32);
+	return select_core(cl, a.ncl, cb, gr, a.ng, a.over, view);
 }
 
 } // namespace rm

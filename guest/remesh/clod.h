@@ -47,4 +47,10 @@ std::vector<int32_t> clod_cut(const Clod &d, float threshold, float error_scale)
 std::vector<int32_t> clod_select(const std::vector<int32_t> &clusters, const std::vector<float> &cluster_bounds,
 		const std::vector<float> &groups, const std::vector<float> &view);
 
+// Resident metadata: one contiguous arena per slot, filled once by clod_load and read by
+// clod_select_resident on every frame, so a frame copies only its view into the guest.
+bool clod_load(int slot, const std::vector<int32_t> &clusters, const std::vector<float> &cluster_bounds,
+		const std::vector<float> &groups);
+std::vector<int32_t> clod_select_resident(int slot, const std::vector<float> &view);
+
 } // namespace rm

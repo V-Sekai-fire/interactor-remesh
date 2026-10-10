@@ -478,6 +478,15 @@ static Variant clod_select(PackedInt32Array clusters, PackedFloat32Array cluster
 	return Variant(PackedInt32Array(rm::clod_select(clusters.fetch(), cluster_bounds.fetch(), groups.fetch(), view.fetch())));
 }
 
+// Resident cut (clod.h): load a slot's metadata once, then select with only the view.
+static Variant clod_load(int64_t slot, PackedInt32Array clusters, PackedFloat32Array cluster_bounds, PackedFloat32Array groups) {
+	return Variant(rm::clod_load(int(slot), clusters.fetch(), cluster_bounds.fetch(), groups.fetch()));
+}
+
+static Variant clod_select_resident(int64_t slot, PackedFloat32Array view) {
+	return Variant(PackedInt32Array(rm::clod_select_resident(int(slot), view.fetch())));
+}
+
 // Cluster LOD gate on a 0.1 m sphere of 96 x 96 quads. For each threshold the cut must:
 // at 0, be the whole input; shrink as the threshold grows; be closed (every edge between two
 // triangles, by position); and sag from the sphere no more than twice the threshold past the
@@ -575,6 +584,8 @@ int main() {
 	ADD_API_FUNCTION(gate_avatar, "String", "int planted", "avatar gate; planted 1..3 must FAIL");
 	ADD_API_FUNCTION(cluster_lod, "Array", "PackedVector3Array positions, PackedFloat32Array attributes, int attribute_count, PackedInt32Array indices, int max_triangles, int flags", "cluster LOD DAG; [indices, clusters, cluster_bounds, groups, positions, source]");
 	ADD_API_FUNCTION(clod_select, "PackedInt32Array", "PackedInt32Array clusters, PackedFloat32Array cluster_bounds, PackedFloat32Array groups, PackedFloat32Array view", "drawn cluster ids for one view: eye, error scale, culling planes");
+	ADD_API_FUNCTION(clod_load, "bool", "int slot, PackedInt32Array clusters, PackedFloat32Array cluster_bounds, PackedFloat32Array groups", "keep a DAG's metadata resident in slot");
+	ADD_API_FUNCTION(clod_select_resident, "PackedInt32Array", "int slot, PackedFloat32Array view", "drawn cluster ids for one view from a resident slot");
 	ADD_API_FUNCTION(gate_clod, "String", "int planted_scale", "cluster LOD gate; planted_scale > 1 under-reports and must FAIL");
 	halt();
 }
