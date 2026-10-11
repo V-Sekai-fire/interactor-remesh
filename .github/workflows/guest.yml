@@ -1,0 +1,41 @@
+# remesh.elf built from a clean runner against the pins in guest/remesh/CITATION.cff.
+# The gates run through the sandbox host's probe, which no repository builds in CI yet; this job proves the
+# guest compiles and links for riscv64 at the pinned meshoptimizer and guest runtime.
+name: guest
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools from apt
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q clang lld cmake ninja-build
+      - name: The pinned checkouts
+        run: |
+          pin() { grep -A1 "repository-code: https://github.com/$1\$" guest/remesh/CITATION.cff | sed -n 's/.*commit: //p'; }
+          fetch() { # url dir sha
+            git init -q "$2" && git -C "$2" fetch -q --depth 1 "$1" "$3" && git -C "$2" checkout -q FETCH_HEAD
+          }
+          fetch https://github.com/zeux/meshoptimizer "$RUNNER_TEMP/meshoptimizer" "$(pin zeux/meshoptimizer)"
+          fetch https://github.com/V-Sekai-fire/contract-guest-runtime "$RUNNER_TEMP/guest-runtime" "$(pin V-Sekai-fire/contract-guest-runtime)"
+          git clone -q --depth 1 https://github.com/V-Sekai-fire/repository-riscv64-sysroot "$RUNNER_TEMP/riscv64-sysroot"
+      - name: remesh.elf
+        env:
+          SANDBOX_API: ${{ runner.temp }}/guest-runtime/vendor/sandbox-api
+          MESHOPTIMIZER_DIR: ${{ runner.temp }}/meshoptimizer
+          RV64_TOOLCHAIN: ${{ runner.temp }}/riscv64-sysroot/toolchain.cmake
+        run: |
+          tests/remesh/build.sh
+          file build/remesh/remesh | tee /dev/stderr | grep -q 'RISC-V'
