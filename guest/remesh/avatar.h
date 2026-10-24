@@ -1,4 +1,4 @@
-// A mobile avatar variant's mesh and texture work (RFD 2284), host-neutral: a
+// A mobile avatar variant's mesh and texture work (RFD66606-2284), host-neutral: a
 // host only turns its meshes and textures into these arrays and back. Plain
 // C++ with no sandbox API, so it runs in any godot-sandbox host or natively.
 #pragma once

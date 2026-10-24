@@ -1,5 +1,5 @@
 # remesh.elf: meshoptimizer's voxel remesher and simplifier as a godot-sandbox
-# guest, the remesh stage of RFD 2284. Standalone until dress-on's host builds
+# guest, the remesh stage of RFD66606-2284. Standalone until dress-on's host builds
 # the stage guests from sibling checkouts; then its add_stage_elf takes over.
 cmake_minimum_required(VERSION 3.16)
 project(remesh_guest C CXX)

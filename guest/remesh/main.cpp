@@ -1,5 +1,5 @@
 // remesh.elf: meshoptimizer 9e1f07b1's voxel remesher and simplifier for the
-// avatar build (RFD 2284). The guest reads only its arguments and returns
+// avatar build (RFD66606-2284). The guest reads only its arguments and returns
 // arrays; it has no file, socket or host-object access.
 #include <api.hpp>
 #include <meshoptimizer.h>
